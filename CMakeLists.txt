@@ -17,6 +17,14 @@ if(${TARGET_PLATFORM} STREQUAL "vita" AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     endif()
 endif()
 
+if(${TARGET_PLATFORM} STREQUAL "gamecube" AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    message(FATAL_ERROR "Please use /opt/devkitpro/portlibs/gamecube/bin/powerpc-eabi-cmake to configure")
+endif()
+
+if(${TARGET_PLATFORM} STREQUAL "wii" AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    message(FATAL_ERROR "Please use /opt/devkitpro/portlibs/wii/bin/powerpc-eabi-cmake to configure")
+endif()
+
 if(${TARGET_PLATFORM} STREQUAL "switch" AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     message(FATAL_ERROR "Please use /opt/devkitpro/portlibs/switch/bin/aarch64-none-elf-cmake to configure")
 endif()
@@ -34,7 +42,7 @@ set(SHORT_NAME julius)
 set(USER_FRIENDLY_NAME Julius)
 project(${SHORT_NAME} C)
 
-if (NINTENDO_SWITCH)
+if (NINTENDO_SWITCH OR NINTENDO_WII OR NINTENDO_GAMECUBE)
     find_package(PkgConfig REQUIRED)
 endif()
 
@@ -641,6 +649,7 @@ else()
     endfunction()
 
     find_package(SDL2 REQUIRED)
+
     find_package(SDL2_mixer REQUIRED)
 endif()
 
@@ -816,6 +825,13 @@ nx_create_nro (${PROJECT_NAME}
     NACP ${PROJECT_NAME}.nacp
     ICON ${CMAKE_SOURCE_DIR}/res/switch/icon0.jpg
 )
+
+elseif(NINTENDO_WII OR NINTENDO_GAMECUBE)
+
+    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2 SDL2_mixer)
+    target_link_libraries(${SHORT_NAME} PkgConfig::SDL2)
+
+    ogc_create_dol(${SHORT_NAME})
 
 else()
     if (UNIX AND NOT APPLE AND (CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang"))
