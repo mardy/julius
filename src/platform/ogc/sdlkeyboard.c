@@ -32,24 +32,16 @@ struct SDL_OGC_DriverData {
     SDL_Texture **key_textures;
 };
 
-typedef struct SpecialKey {
-    int8_t width;
-    const char *symbol;
-} SpecialKey;
-
 typedef struct RowLayout {
-    const SpecialKey *sk_left;
     const char **symbols;
-    const SpecialKey *sk_right;
 } RowLayout;
 
 typedef struct ButtonRow {
     int8_t start_x;
     int8_t spacing;
-    int8_t width;
-    int8_t num_sk_left;
-    int8_t num_symbols;
-    int8_t num_sk_right;
+    int8_t num_keys;
+    /* button widths, in pixels */
+    const uint8_t *widths;
     RowLayout layouts[NUM_LAYOUTS];
 } ButtonRow;
 
@@ -64,29 +56,33 @@ static const char *KEYCAP_SPACE = " ";
 static const char *KEYCAP_RETURN = "\n";
 static const char *KEYCAP_PERIOD = ".";
 
-static const SpecialKey sk_backspace = { 85, KEYCAP_BACKSPACE };
-static const SpecialKey sk_shift = { 85, KEYCAP_SHIFT };
+static const uint8_t s_widths_10[] = { 54, 54, 54, 54, 54, 54, 54, 54, 54, 54 };
 static const char *row0syms[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" };
-static const ButtonRow row0 = { 14, 8, 54, 0, 10, 0, {
-    { NULL, row0syms, NULL },
+static const ButtonRow row0 = { 14, 8, 10, s_widths_10, {
+    { row0syms },
 }};
+
 static const char *row1syms0[] = { "q", "w", "e", "r", "t", "y", "u", "i", "o", "p" };
 static const char *row1syms1[] = { "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P" };
-static const ButtonRow row1 = { 14, 8, 54, 0, 10, 0, {
-    { NULL, row1syms0, NULL },
-    { NULL, row1syms1, NULL },
+static const ButtonRow row1 = { 14, 8, 10, s_widths_10, {
+    { row1syms0 },
+    { row1syms1 },
 }};
+
 static const char *row2syms0[] = { "a", "s", "d", "f", "g", "h", "j", "k", "l" };
 static const char *row2syms1[] = { "A", "S", "D", "F", "G", "H", "J", "K", "L" };
-static const ButtonRow row2 = { 45, 8, 54, 0, 9, 0, {
-    { NULL, row2syms0, NULL },
-    { NULL, row2syms1, NULL },
+
+static const ButtonRow row2 = { 45, 8, 9, s_widths_10, {
+    { row2syms0 },
+    { row2syms1 },
 }};
-static const char *row3syms0[] = { "z", "x", "c", "v", "b", "n", "m" };
-static const char *row3syms1[] = { "Z", "X", "C", "V", "B", "N", "M" };
-static const ButtonRow row3 = { 14, 8, 54, 1, 7, 1, {
-    { &sk_shift, row3syms0, &sk_backspace },
-    { &sk_shift, row3syms1, &sk_backspace },
+
+static const uint8_t s_widths_7_2[] = { 85, 54, 54, 54, 54, 54, 54, 54, 85 };
+static const char *row3syms0[] = { KEYCAP_SHIFT, "z", "x", "c", "v", "b", "n", "m", KEYCAP_BACKSPACE };
+static const char *row3syms1[] = { KEYCAP_SHIFT, "Z", "X", "C", "V", "B", "N", "M", KEYCAP_BACKSPACE };
+static const ButtonRow row3 = { 14, 8, 9, s_widths_7_2, {
+    { row3syms0 },
+    { row3syms1 },
 }};
 
 static const ButtonRows rows = { &row0, &row1, &row2, &row3 };
@@ -97,7 +93,7 @@ static inline int key_id_from_pos(int row, int col)
 {
     int key_id = 0;
     for (int i = 0; i < row; i++) {
-        key_id += rows[i]->num_sk_left + rows[i]->num_symbols + rows[i]->num_sk_right;
+        key_id += rows[i]->num_keys;
     }
     key_id += col;
     return key_id;
@@ -131,16 +127,7 @@ static inline const char *text_by_pos(SDL_OGC_DriverData *data, int row, int col
     const ButtonRow *br = rows[row];
     int l = data->active_layout;
 
-    if (col < br->num_sk_left) {
-        return br->layouts[l].sk_left[col].symbol;
-    }
-
-    int key = col - br->num_sk_left;
-    if (key < br->num_symbols) {
-        return br->layouts[l].symbols[key];
-    }
-
-    return br->layouts[l].sk_right[key - br->num_symbols].symbol;
+    return br->layouts[l].symbols[col];
 }
 
 static inline SDL_Texture *load_key_texture(SDL_OGC_DriverData *data, SDL_Renderer *renderer,
@@ -206,53 +193,24 @@ static void draw_keyboard(SDL_OGC_VkContext *context, SDL_Renderer *renderer)
 {
     SDL_OGC_DriverData *data = context->driverdata;
     int start_y = data->screen_height - data->visible_height + 5;
-    int layout_idx = data->active_layout;
 
     SDL_SetRenderDrawColor(renderer, 0x5A, 0x60, 0x6A, 255);
 
     for (int row = 0; row < NUM_ROWS; row++) {
         const ButtonRow *br = rows[row];
-        const RowLayout *layout = &br->layouts[layout_idx];
         int y = start_y + (ROW_HEIGHT + ROW_SPACING) * row;
         int x = br->start_x;
-        int col = 0;
 
-        for (int key = 0; key < br->num_sk_left; key++, col++) {
-            const SpecialKey *sk = &layout->sk_left[key];
+        for (int col = 0; col < br->num_keys; col++) {
             SDL_Rect rect;
             rect.x = x;
             rect.y = y;
-            rect.w = sk->width;
+            rect.w = br->widths[col];
             rect.h = ROW_HEIGHT;
             draw_key_background(context, renderer, &rect, row, col);
             draw_key(context, renderer, row, col, &rect);
 
-            x += sk->width + br->spacing;
-        }
-
-        for (int key = 0; key < br->num_symbols; key++, col++) {
-            SDL_Rect rect;
-            rect.x = x;
-            rect.y = y;
-            rect.w = br->width;
-            rect.h = ROW_HEIGHT;
-            draw_key_background(context, renderer, &rect, row, col);
-            draw_key(context, renderer, row, col, &rect);
-
-            x += br->width + br->spacing;
-        }
-
-        for (int key = 0; key < br->num_sk_right; key++, col++) {
-            const SpecialKey *sk = &layout->sk_right[key];
-            SDL_Rect rect;
-            rect.x = x;
-            rect.y = y;
-            rect.w = sk->width;
-            rect.h = ROW_HEIGHT;
-            draw_key_background(context, renderer, &rect, row, col);
-            draw_key(context, renderer, row, col, &rect);
-
-            x += sk->width + br->spacing;
+            x += br->widths[col] + br->spacing;
         }
     }
 }
@@ -296,45 +254,24 @@ static int key_at(SDL_OGC_VkContext *context, int px, int py,
 {
     SDL_OGC_DriverData *data = context->driverdata;
     int start_y = data->screen_height - data->visible_height + 5;
-    int l = data->active_layout;
 
     for (int row = 0; row < NUM_ROWS; row++) {
         const ButtonRow *br = rows[row];
         int y = start_y + (ROW_HEIGHT + ROW_SPACING) * row;
-        int x, col = 0;
+        int x;
 
         if (py < y) break;
         if (py >= y + ROW_HEIGHT) continue;
 
         x = br->start_x;
 
-        for (int key = 0; key < br->num_sk_left; key++, col++) {
-            const SpecialKey *sk = &br->layouts[l].sk_left[key];
-            if (px > x && px < x + sk->width) {
+        for (int col = 0; col < br->num_keys; col++) {
+            if (px > x && px < x + br->widths[col]) {
                 *out_row = row;
                 *out_col = col;
                 return 1;
             }
-            x += sk->width + br->spacing;
-        }
-
-        for (int key = 0; key < br->num_symbols; key++, col++) {
-            if (px > x && px < x + br->width) {
-                *out_row = row;
-                *out_col = col;
-                return 1;
-            }
-            x += br->width + br->spacing;
-        }
-
-        for (int key = 0; key < br->num_sk_right; key++, col++) {
-            const SpecialKey *sk = &br->layouts[l].sk_right[key];
-            if (px > x && px < x + sk->width) {
-                *out_row = row;
-                *out_col = col;
-                return 1;
-            }
-            x += sk->width + br->spacing;
+            x += br->widths[col] + br->spacing;
         }
     }
     return 0;
