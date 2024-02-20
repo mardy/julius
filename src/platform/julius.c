@@ -26,11 +26,13 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "platform/android/android.h"
 #include "platform/emscripten/emscripten.h"
 #include "platform/switch/switch.h"
 #include "platform/vita/vita.h"
+#include "platform/ogc/ogc.h"
 
 #if defined(_WIN32)
 #include <string.h>
@@ -392,6 +394,7 @@ static int init_sdl(void)
     SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
 #endif
 
+    SDL_OGC_RegisterVkPlugin(ogc_keyboard_get_plugin());
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) != 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not initialize SDL: %s", SDL_GetError());
         return 0;
@@ -579,6 +582,7 @@ static void setup(const julius_args *args)
 
 int main(int argc, char **argv)
 {
+    chdir("/apps/julius");
     julius_args args;
     platform_parse_arguments(argc, argv, &args);
 

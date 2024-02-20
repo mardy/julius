@@ -209,6 +209,11 @@ elseif (NINTENDO_SWITCH)
         ${PLATFORM_FILES}
         ${PROJECT_SOURCE_DIR}/src/platform/switch/switch.c
     )
+elseif (NINTENDO_WII OR NINTENDO_GAMECUBE)
+    set(PLATFORM_FILES
+        ${PLATFORM_FILES}
+        ${PROJECT_SOURCE_DIR}/src/platform/ogc/sdlkeyboard.c
+    )
 elseif (${TARGET_PLATFORM} STREQUAL "android")
     set(PLATFORM_FILES
         ${PLATFORM_FILES}
@@ -828,7 +833,7 @@ nx_create_nro (${PROJECT_NAME}
 
 elseif(NINTENDO_WII OR NINTENDO_GAMECUBE)
 
-    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2 SDL2_mixer)
+    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2 SDL2_mixer SDL2_ttf)
     target_link_libraries(${SHORT_NAME} PkgConfig::SDL2)
 
     ogc_create_dol(${SHORT_NAME})

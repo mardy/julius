@@ -210,7 +210,7 @@ int platform_screen_resize(int pixel_width, int pixel_height)
 
     setting_set_display(setting_fullscreen(), logical_width, logical_height);
     SDL.texture = SDL_CreateTexture(SDL.renderer,
-        SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
+        SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING,
         logical_width, logical_height);
 
     if (SDL.texture) {
