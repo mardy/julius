@@ -42,6 +42,8 @@ typedef struct ButtonRow {
     int8_t start_x;
     int8_t spacing;
     int8_t num_keys;
+    uint16_t special_keys_bitmask;
+    uint16_t enter_key_bitmask;
     /* button widths, in units of 2 pixels */
     const uint8_t *widths;
     RowLayout layouts[NUM_LAYOUTS];
@@ -53,17 +55,22 @@ static const char KEYCAP_BACKSPACE[] = "\u2190";
 static const char KEYCAP_SHIFT[] = "\u2191";
 static const char KEYCAP_SYM1[] = "1/2";
 static const char KEYCAP_SYM2[] = "2/2";
-static const char KEYCAP_NUMBERS[] = "123";
 static const char KEYCAP_SYMBOLS[] = "=\\<";
 static const char KEYCAP_ABC[] = "abc";
 static const char KEYCAP_SPACE[] = " ";
 static const char KEYCAP_RETURN[] = "\u23CE";
 static const char KEYCAP_PERIOD[] = ".";
+static const SDL_Color ColorKeyBgLetter = { 0x5A, 0x60, 0x6A, 0xff };
+static const SDL_Color ColorKeyBgLetterHigh = { 0x5A / 2, 0x60 / 2, 0x6A / 2, 0xff };
+static const SDL_Color ColorKeyBgEnter = { 0x00, 0x3C, 0x00, 0xff };
+static const SDL_Color ColorKeyBgEnterHigh = { 0x32, 0x3C*2, 0x3E, 0xff };
+static const SDL_Color ColorKeyBgSpecial = { 0x32, 0x36, 0x3E, 0xff };
+static const SDL_Color ColorKeyBgSpecialHigh = { 0x32/2, 0x36/2, 0x3E/2, 0xff };
 
 static const uint8_t s_widths_10[] = { 26, 26, 26, 26, 26, 26, 26, 26, 26, 26 };
 static const char *row0syms[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" };
 static const char *row0syms2[] = { "~", "@", "#", "$", "%", "^", "&", "*", "(", ")" };
-static const ButtonRow row0 = { 6, 12, 10, s_widths_10, {
+static const ButtonRow row0 = { 6, 12, 10, 0x0, 0x0, s_widths_10, {
     { row0syms },
     { row0syms },
     { row0syms2 },
@@ -74,7 +81,7 @@ static const char *row1syms0[] = { "q", "w", "e", "r", "t", "y", "u", "i", "o", 
 static const char *row1syms1[] = { "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P" };
 static const char *row1syms2[] = { "\\", "/", "€", "¢", "=", "-", "_", "+", "[", "]" };
 static const char *row1syms3[] = { "©", "®", "£", "µ", "¥", "№", "°", "\u2605", "\u261e", "\u261c" };
-static const ButtonRow row1 = { 6, 12, 10, s_widths_10, {
+static const ButtonRow row1 = { 6, 12, 10, 0x0, 0x0, s_widths_10, {
     { row1syms0 },
     { row1syms1 },
     { row1syms2 },
@@ -85,7 +92,7 @@ static const char *row2syms0[] = { "a", "s", "d", "f", "g", "h", "j", "k", "l" }
 static const char *row2syms1[] = { "A", "S", "D", "F", "G", "H", "J", "K", "L" };
 static const char *row2syms2[] = { "<", ">", "¿", "¡", "—", "´", "|", "{", "}" };
 static const char *row2syms3[] = { "«", "»", "\u263A", "\u2639", "\U0001f600", "\U0001f609", "\U0001f622", "\U0001f607", "\U0001f608" };
-static const ButtonRow row2 = { 38, 12, 9, s_widths_10, {
+static const ButtonRow row2 = { 38, 12, 9, 0x0, 0x0, s_widths_10, {
     { row2syms0 },
     { row2syms1 },
     { row2syms2 },
@@ -97,7 +104,7 @@ static const char *row3syms0[] = { KEYCAP_SHIFT, "z", "x", "c", "v", "b", "n", "
 static const char *row3syms1[] = { KEYCAP_SHIFT, "Z", "X", "C", "V", "B", "N", "M", KEYCAP_BACKSPACE };
 static const char *row3syms2[] = { KEYCAP_SYM1, "`", "\"", "'", ":", ";", "!", "?", KEYCAP_BACKSPACE };
 static const char *row3syms3[] = { KEYCAP_SYM2, "\u26a0", "§", "±", "\u2642", "\u2640", "\u2600", "\u263e", KEYCAP_BACKSPACE };
-static const ButtonRow row3 = { 6, 12, 9, s_widths_7_2, {
+static const ButtonRow row3 = { 6, 12, 9, 0x101, 0x0, s_widths_7_2, {
     { row3syms0 },
     { row3syms1 },
     { row3syms2 },
@@ -107,7 +114,7 @@ static const ButtonRow row3 = { 6, 12, 9, s_widths_7_2, {
 static const uint8_t s_widths_bar[] = { 42, 26, 122, 26, 74 };
 static const char *row4syms0[] = { KEYCAP_SYMBOLS, ",", KEYCAP_SPACE, KEYCAP_PERIOD, KEYCAP_RETURN };
 static const char *row4syms2[] = { KEYCAP_ABC, ",", KEYCAP_SPACE, KEYCAP_PERIOD, KEYCAP_RETURN };
-static const ButtonRow row4 = { 6, 12, 5, s_widths_bar, {
+static const ButtonRow row4 = { 6, 12, 5, 0x1, 0x10, s_widths_bar, {
     { row4syms0 },
     { row4syms0 },
     { row4syms2 },
@@ -212,24 +219,26 @@ static inline void draw_key_background(SDL_OGC_VkContext *context, SDL_Renderer 
 {
     SDL_OGC_DriverData *data = context->driverdata;
     int highlighted;
+    const SDL_Color *color;
+    const ButtonRow *br = rows[row];
+    uint16_t col_mask = 1 << col;
 
     highlighted = row == data->highlight_row && col == data->highlight_col;
-    if (highlighted) {
-        SDL_SetRenderDrawColor(renderer, 0x5A/2, 0x60/2, 0x6A/2, 255);
+    if (col_mask & br->enter_key_bitmask) {
+        color = highlighted ? &ColorKeyBgEnterHigh : &ColorKeyBgEnter;
+    } else if (col_mask & br->special_keys_bitmask) {
+        color = highlighted ? &ColorKeyBgSpecialHigh : &ColorKeyBgSpecial;
+    } else {
+        color = highlighted ? &ColorKeyBgLetterHigh : &ColorKeyBgLetter;
     }
+    SDL_SetRenderDrawColor(renderer, color->r, color->g, color->b, color->a);
     SDL_RenderFillRect(renderer, rect);
-    if (highlighted) {
-        // restore previous color
-        SDL_SetRenderDrawColor(renderer, 0x5A, 0x60, 0x6A, 255);
-    }
 }
 
 static void draw_keyboard(SDL_OGC_VkContext *context, SDL_Renderer *renderer)
 {
     SDL_OGC_DriverData *data = context->driverdata;
     int start_y = data->screen_height - data->visible_height + 5;
-
-    SDL_SetRenderDrawColor(renderer, 0x5A, 0x60, 0x6A, 255);
 
     for (int row = 0; row < NUM_ROWS; row++) {
         const ButtonRow *br = rows[row];
