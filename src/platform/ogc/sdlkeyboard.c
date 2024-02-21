@@ -5,13 +5,13 @@
 
 #define ANIMATION_TIME_ENTER 2000
 #define ANIMATION_TIME_EXIT 500
-#define NUM_ROWS 4
+#define NUM_ROWS 5
 #define NUM_LAYOUTS 4
 #define ROW_HEIGHT 40
-#define ROW_SPACING 8
-#define KEYBOARD_HEIGHT 320
+#define ROW_SPACING 12
+#define KEYBOARD_HEIGHT (NUM_ROWS * (ROW_HEIGHT + ROW_SPACING))
 #define FONT_NAME "ogcosk/keys.ttf"
-#define FONT_SIZE 16
+#define FONT_SIZE 24
 #define TEXTURE_CACHE_SIZE 40
 
 struct SDL_OGC_DriverData {
@@ -28,6 +28,8 @@ struct SDL_OGC_DriverData {
     int target_visible_height;
     int animation_time;
     SDL_Color key_color;
+    SDL_Cursor *app_cursor;
+    SDL_Cursor *default_cursor;
     TTF_Font *key_font;
     SDL_Texture **key_textures;
 };
@@ -40,7 +42,7 @@ typedef struct ButtonRow {
     int8_t start_x;
     int8_t spacing;
     int8_t num_keys;
-    /* button widths, in pixels */
+    /* button widths, in units of 2 pixels */
     const uint8_t *widths;
     RowLayout layouts[NUM_LAYOUTS];
 } ButtonRow;
@@ -49,43 +51,70 @@ typedef const ButtonRow *ButtonRows[];
 
 static const char KEYCAP_BACKSPACE[] = "\u2190";
 static const char KEYCAP_SHIFT[] = "\u2191";
-static const char *KEYCAP_NUMBERS = "123";
-static const char *KEYCAP_SYMBOLS = "SYM";
-static const char *KEYCAP_ABC = "abc";
-static const char *KEYCAP_SPACE = " ";
-static const char *KEYCAP_RETURN = "\n";
-static const char *KEYCAP_PERIOD = ".";
+static const char KEYCAP_SYM1[] = "1/2";
+static const char KEYCAP_SYM2[] = "2/2";
+static const char KEYCAP_NUMBERS[] = "123";
+static const char KEYCAP_SYMBOLS[] = "=\\<";
+static const char KEYCAP_ABC[] = "abc";
+static const char KEYCAP_SPACE[] = " ";
+static const char KEYCAP_RETURN[] = "\u23CE";
+static const char KEYCAP_PERIOD[] = ".";
 
-static const uint8_t s_widths_10[] = { 54, 54, 54, 54, 54, 54, 54, 54, 54, 54 };
+static const uint8_t s_widths_10[] = { 26, 26, 26, 26, 26, 26, 26, 26, 26, 26 };
 static const char *row0syms[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" };
-static const ButtonRow row0 = { 14, 8, 10, s_widths_10, {
+static const char *row0syms2[] = { "~", "@", "#", "$", "%", "^", "&", "*", "(", ")" };
+static const ButtonRow row0 = { 6, 12, 10, s_widths_10, {
     { row0syms },
+    { row0syms },
+    { row0syms2 },
+    { row0syms2 },
 }};
 
 static const char *row1syms0[] = { "q", "w", "e", "r", "t", "y", "u", "i", "o", "p" };
 static const char *row1syms1[] = { "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P" };
-static const ButtonRow row1 = { 14, 8, 10, s_widths_10, {
+static const char *row1syms2[] = { "\\", "/", "€", "¢", "=", "-", "_", "+", "[", "]" };
+static const char *row1syms3[] = { "©", "®", "£", "µ", "¥", "№", "°", "\u2605", "\u261e", "\u261c" };
+static const ButtonRow row1 = { 6, 12, 10, s_widths_10, {
     { row1syms0 },
     { row1syms1 },
+    { row1syms2 },
+    { row1syms3 },
 }};
 
 static const char *row2syms0[] = { "a", "s", "d", "f", "g", "h", "j", "k", "l" };
 static const char *row2syms1[] = { "A", "S", "D", "F", "G", "H", "J", "K", "L" };
-
-static const ButtonRow row2 = { 45, 8, 9, s_widths_10, {
+static const char *row2syms2[] = { "<", ">", "¿", "¡", "—", "´", "|", "{", "}" };
+static const char *row2syms3[] = { "«", "»", "\u263A", "\u2639", "\U0001f600", "\U0001f609", "\U0001f622", "\U0001f607", "\U0001f608" };
+static const ButtonRow row2 = { 38, 12, 9, s_widths_10, {
     { row2syms0 },
     { row2syms1 },
+    { row2syms2 },
+    { row2syms3 },
 }};
 
-static const uint8_t s_widths_7_2[] = { 85, 54, 54, 54, 54, 54, 54, 54, 85 };
+static const uint8_t s_widths_7_2[] = { 42, 26, 26, 26, 26, 26, 26, 26, 42 };
 static const char *row3syms0[] = { KEYCAP_SHIFT, "z", "x", "c", "v", "b", "n", "m", KEYCAP_BACKSPACE };
 static const char *row3syms1[] = { KEYCAP_SHIFT, "Z", "X", "C", "V", "B", "N", "M", KEYCAP_BACKSPACE };
-static const ButtonRow row3 = { 14, 8, 9, s_widths_7_2, {
+static const char *row3syms2[] = { KEYCAP_SYM1, "`", "\"", "'", ":", ";", "!", "?", KEYCAP_BACKSPACE };
+static const char *row3syms3[] = { KEYCAP_SYM2, "\u26a0", "§", "±", "\u2642", "\u2640", "\u2600", "\u263e", KEYCAP_BACKSPACE };
+static const ButtonRow row3 = { 6, 12, 9, s_widths_7_2, {
     { row3syms0 },
     { row3syms1 },
+    { row3syms2 },
+    { row3syms3 },
 }};
 
-static const ButtonRows rows = { &row0, &row1, &row2, &row3 };
+static const uint8_t s_widths_bar[] = { 42, 26, 122, 26, 74 };
+static const char *row4syms0[] = { KEYCAP_SYMBOLS, ",", KEYCAP_SPACE, KEYCAP_PERIOD, KEYCAP_RETURN };
+static const char *row4syms2[] = { KEYCAP_ABC, ",", KEYCAP_SPACE, KEYCAP_PERIOD, KEYCAP_RETURN };
+static const ButtonRow row4 = { 6, 12, 5, s_widths_bar, {
+    { row4syms0 },
+    { row4syms0 },
+    { row4syms2 },
+    { row4syms2 },
+}};
+
+static const ButtonRows rows = { &row0, &row1, &row2, &row3, &row4 };
 
 static void HideScreenKeyboard(SDL_OGC_VkContext *context);
 
@@ -114,8 +143,11 @@ static void free_key_textures(SDL_OGC_DriverData *data)
 {
     if (!data->key_textures) return;
 
-    for (SDL_Texture **t = data->key_textures; *t != NULL; t++) {
-        SDL_DestroyTexture(*t);
+    for (int i = 0; i < TEXTURE_CACHE_SIZE; i++) {
+        SDL_Texture *texture = data->key_textures[i];
+        if (texture) {
+            SDL_DestroyTexture(texture);
+        }
     }
     SDL_free(data->key_textures);
     data->key_textures = NULL;
@@ -125,9 +157,9 @@ static void free_key_textures(SDL_OGC_DriverData *data)
 static inline const char *text_by_pos(SDL_OGC_DriverData *data, int row, int col)
 {
     const ButtonRow *br = rows[row];
-    int l = data->active_layout;
+    const RowLayout *layout = &br->layouts[data->active_layout];
 
-    return br->layouts[l].symbols[col];
+    return layout->symbols ? layout->symbols[col] : NULL;
 }
 
 static inline SDL_Texture *load_key_texture(SDL_OGC_DriverData *data, SDL_Renderer *renderer,
@@ -137,8 +169,9 @@ static inline SDL_Texture *load_key_texture(SDL_OGC_DriverData *data, SDL_Render
     SDL_Surface *surface;
     SDL_Texture *texture;
 
-    printf("Have to load texture %d %d\n", row, col);
     text = text_by_pos(data, row, col);
+    if (!text) return NULL;
+
     surface = TTF_RenderUTF8_Blended(data->key_font, text, data->key_color);
     texture = SDL_CreateTextureFromSurface(renderer, surface);
     SDL_FreeSurface(surface);
@@ -166,6 +199,8 @@ static inline void draw_key(SDL_OGC_VkContext *context, SDL_Renderer *renderer,
     SDL_Rect dstRect;
 
     texture = lookup_key_texture(data, renderer, row, col);
+    if (!texture) return;
+
     SDL_QueryTexture(texture, NULL, NULL, &dstRect.w, &dstRect.h);
     dstRect.x = rect->x + (rect->w - dstRect.w) / 2;
     dstRect.y = rect->y + (rect->h - dstRect.h) / 2;
@@ -205,12 +240,12 @@ static void draw_keyboard(SDL_OGC_VkContext *context, SDL_Renderer *renderer)
             SDL_Rect rect;
             rect.x = x;
             rect.y = y;
-            rect.w = br->widths[col];
+            rect.w = br->widths[col] * 2;
             rect.h = ROW_HEIGHT;
             draw_key_background(context, renderer, &rect, row, col);
             draw_key(context, renderer, row, col, &rect);
 
-            x += br->widths[col] + br->spacing;
+            x += br->widths[col] * 2 + br->spacing;
         }
     }
 }
@@ -221,6 +256,11 @@ static void dispose_keyboard(SDL_OGC_VkContext *context)
 
     context->is_open = SDL_FALSE;
     free_key_textures(data);
+
+    if (data->app_cursor) {
+        SDL_SetCursor(data->app_cursor);
+        data->app_cursor = NULL;
+    }
 }
 
 static void update_animation(SDL_OGC_VkContext *context)
@@ -235,6 +275,7 @@ static void update_animation(SDL_OGC_VkContext *context)
     if (elapsed >= data->animation_time) {
         data->visible_height = data->target_visible_height;
         context->screen_pan_y = data->target_pan_y;
+        data->animation_time = 0;
         printf("Desired state reached\n");
         if (data->target_visible_height == 0) {
             dispose_keyboard(context);
@@ -266,15 +307,24 @@ static int key_at(SDL_OGC_VkContext *context, int px, int py,
         x = br->start_x;
 
         for (int col = 0; col < br->num_keys; col++) {
-            if (px > x && px < x + br->widths[col]) {
+            if (px > x && px < x + br->widths[col] * 2) {
                 *out_row = row;
                 *out_col = col;
                 return 1;
             }
-            x += br->widths[col] + br->spacing;
+            x += br->widths[col] * 2 + br->spacing;
         }
     }
     return 0;
+}
+
+static void switch_layout(SDL_OGC_VkContext *context, int level)
+{
+    SDL_OGC_DriverData *data = context->driverdata;
+
+    data->active_layout = level;
+    free_key_textures(data);
+    initialize_key_textures(data);
 }
 
 static void handle_click(SDL_OGC_VkContext *context, int px, int py)
@@ -293,10 +343,16 @@ static void handle_click(SDL_OGC_VkContext *context, int px, int py)
         /* We can use pointer comparisons here */
         if (text == KEYCAP_BACKSPACE) {
             SDL_OGC_SendVirtualKeyboardKey(SDL_PRESSED, SDL_SCANCODE_BACKSPACE);
+        } else if (text == KEYCAP_RETURN) {
+            SDL_OGC_SendVirtualKeyboardKey(SDL_PRESSED, SDL_SCANCODE_RETURN);
+        } else if (text == KEYCAP_ABC) {
+            switch_layout(context, 0);
         } else if (text == KEYCAP_SHIFT) {
-            data->active_layout = !data->active_layout;
-            free_key_textures(data);
-            initialize_key_textures(data);
+            switch_layout(context, !data->active_layout);
+        } else if (text == KEYCAP_SYMBOLS || text == KEYCAP_SYM2) {
+            switch_layout(context, 2);
+        } else if (text == KEYCAP_SYM1) {
+            switch_layout(context, 3);
         } else {
             SDL_OGC_SendKeyboardText(text);
         }
@@ -340,8 +396,9 @@ static void RenderKeyboard(SDL_OGC_VkContext *context)
     SDL_Rect osk_rect;
 
     //printf("%s called\n", __func__);
-    if (data->visible_height != data->target_visible_height) {
+    if (data->animation_time > 0) {
         update_animation(context);
+        if (!context->is_open) return;
     }
 
     renderer = SDL_GetRenderer(context->window);
@@ -354,6 +411,9 @@ static void RenderKeyboard(SDL_OGC_VkContext *context)
 
     draw_keyboard(context, renderer);
 
+    if (data->app_cursor) {
+        SDL_SetCursor(data->default_cursor);
+    }
     SDL_RenderFlush(renderer);
 }
 
@@ -406,6 +466,7 @@ static void SetTextInputRect(SDL_OGC_VkContext *context, const SDL_Rect *rect)
 static void ShowScreenKeyboard(SDL_OGC_VkContext *context)
 {
     SDL_OGC_DriverData *data = context->driverdata;
+    SDL_Cursor *cursor, *default_cursor;
 
     initialize_key_textures(data);
 
@@ -422,6 +483,13 @@ static void ShowScreenKeyboard(SDL_OGC_VkContext *context)
     data->start_visible_height = data->visible_height;
     data->target_visible_height = KEYBOARD_HEIGHT;
     data->animation_time = ANIMATION_TIME_ENTER;
+
+    cursor = SDL_GetCursor();
+    default_cursor = SDL_GetDefaultCursor();
+    if (cursor != default_cursor) {
+        data->app_cursor = cursor;
+        data->default_cursor = default_cursor;
+    }
 }
 
 static void HideScreenKeyboard(SDL_OGC_VkContext *context)
