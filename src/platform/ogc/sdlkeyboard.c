@@ -3,7 +3,7 @@
 #include <SDL.h>
 #include <SDL_ttf.h>
 
-#define ANIMATION_TIME_ENTER 2000
+#define ANIMATION_TIME_ENTER 1000
 #define ANIMATION_TIME_EXIT 500
 #define NUM_ROWS 5
 #define NUM_LAYOUTS 4
@@ -13,12 +13,15 @@
 #define FONT_NAME "ogcosk/keys.ttf"
 #define FONT_SIZE 24
 #define TEXTURE_CACHE_SIZE 40
+#define FOCUS_BORDER 4
 
 struct SDL_OGC_DriverData {
     int16_t screen_width;
     int16_t screen_height;
     int16_t start_pan_y;
     int16_t target_pan_y;
+    int8_t focus_row;
+    int8_t focus_col;
     int8_t highlight_row;
     int8_t highlight_col;
     int8_t active_layout;
@@ -66,6 +69,7 @@ static const SDL_Color ColorKeyBgEnter = { 0x00, 0x3C, 0x00, 0xff };
 static const SDL_Color ColorKeyBgEnterHigh = { 0x32, 0x3C*2, 0x3E, 0xff };
 static const SDL_Color ColorKeyBgSpecial = { 0x32, 0x36, 0x3E, 0xff };
 static const SDL_Color ColorKeyBgSpecialHigh = { 0x32/2, 0x36/2, 0x3E/2, 0xff };
+static const SDL_Color ColorFocus = { 0xe0, 0xf0, 0x10, 0xff };
 
 static const uint8_t s_widths_10[] = { 26, 26, 26, 26, 26, 26, 26, 26, 26, 26 };
 static const char *row0syms[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" };
@@ -223,6 +227,17 @@ static inline void draw_key_background(SDL_OGC_VkContext *context, SDL_Renderer 
     const ButtonRow *br = rows[row];
     uint16_t col_mask = 1 << col;
 
+    if (row == data->focus_row && col == data->focus_col) {
+        SDL_Rect r;
+        SDL_SetRenderDrawColor(renderer, ColorFocus.r, ColorFocus.g,
+                               ColorFocus.b, ColorFocus.a);
+        r.x = rect->x - FOCUS_BORDER;
+        r.y = rect->y - FOCUS_BORDER;
+        r.w = rect->w + FOCUS_BORDER * 2;
+        r.h = rect->h + FOCUS_BORDER * 2;
+        SDL_RenderFillRect(renderer, &r);
+    }
+
     highlighted = row == data->highlight_row && col == data->highlight_col;
     if (col_mask & br->enter_key_bitmask) {
         color = highlighted ? &ColorKeyBgEnterHigh : &ColorKeyBgEnter;
@@ -336,10 +351,49 @@ static void switch_layout(SDL_OGC_VkContext *context, int level)
     initialize_key_textures(data);
 }
 
+static void activate_mouse(SDL_OGC_DriverData *data)
+{
+    data->focus_row = -1;
+}
+
+static void activate_joypad(SDL_OGC_DriverData *data)
+{
+    if (data->focus_row < 0) {
+        data->focus_row = 2;
+        data->focus_col = rows[data->focus_row]->num_keys / 2;
+    }
+    data->highlight_row = -1;
+}
+
+static void activate_key(SDL_OGC_VkContext *context, int row, int col)
+{
+    SDL_OGC_DriverData *data = context->driverdata;
+    const char *text = text_by_pos(data, row, col);
+
+    /* We can use pointer comparisons here */
+    if (text == KEYCAP_BACKSPACE) {
+        SDL_OGC_SendVirtualKeyboardKey(SDL_PRESSED, SDL_SCANCODE_BACKSPACE);
+    } else if (text == KEYCAP_RETURN) {
+        SDL_OGC_SendVirtualKeyboardKey(SDL_PRESSED, SDL_SCANCODE_RETURN);
+    } else if (text == KEYCAP_ABC) {
+        switch_layout(context, 0);
+    } else if (text == KEYCAP_SHIFT) {
+        switch_layout(context, !data->active_layout);
+    } else if (text == KEYCAP_SYMBOLS || text == KEYCAP_SYM2) {
+        switch_layout(context, 2);
+    } else if (text == KEYCAP_SYM1) {
+        switch_layout(context, 3);
+    } else {
+        SDL_OGC_SendKeyboardText(text);
+    }
+}
+
 static void handle_click(SDL_OGC_VkContext *context, int px, int py)
 {
     SDL_OGC_DriverData *data = context->driverdata;
     int row, col;
+
+    if (data->focus_row >= 0) return;
 
     if (py < data->screen_height - KEYBOARD_HEIGHT) {
         HideScreenKeyboard(context);
@@ -347,24 +401,7 @@ static void handle_click(SDL_OGC_VkContext *context, int px, int py)
     }
 
     if (key_at(context, px, py, &row, &col)) {
-        const char *text = text_by_pos(data, row, col);
-
-        /* We can use pointer comparisons here */
-        if (text == KEYCAP_BACKSPACE) {
-            SDL_OGC_SendVirtualKeyboardKey(SDL_PRESSED, SDL_SCANCODE_BACKSPACE);
-        } else if (text == KEYCAP_RETURN) {
-            SDL_OGC_SendVirtualKeyboardKey(SDL_PRESSED, SDL_SCANCODE_RETURN);
-        } else if (text == KEYCAP_ABC) {
-            switch_layout(context, 0);
-        } else if (text == KEYCAP_SHIFT) {
-            switch_layout(context, !data->active_layout);
-        } else if (text == KEYCAP_SYMBOLS || text == KEYCAP_SYM2) {
-            switch_layout(context, 2);
-        } else if (text == KEYCAP_SYM1) {
-            switch_layout(context, 3);
-        } else {
-            SDL_OGC_SendKeyboardText(text);
-        }
+        activate_key(context, row, col);
     }
 }
 
@@ -373,11 +410,131 @@ static void handle_motion(SDL_OGC_VkContext *context, int px, int py)
     SDL_OGC_DriverData *data = context->driverdata;
     int row, col;
 
+    activate_mouse(data);
+
     if (key_at(context, px, py, &row, &col)) {
         data->highlight_row = row;
         data->highlight_col = col;
     } else {
         data->highlight_row = -1;
+    }
+}
+
+static void move_right(SDL_OGC_DriverData *data)
+{
+    data->focus_col++;
+    if (data->focus_col >= rows[data->focus_row]->num_keys) {
+        data->focus_col = 0;
+    }
+}
+
+static void move_left(SDL_OGC_DriverData *data)
+{
+    data->focus_col--;
+    if (data->focus_col < 0) {
+        data->focus_col = rows[data->focus_row]->num_keys - 1;
+    }
+}
+
+static int adjust_column(int row, int oldrow, int oldcol) {
+    const ButtonRow *br = rows[oldrow];
+    int x, oldx, col;
+
+    x = br->start_x;
+    for (col = 0; col < oldcol; col++) {
+        x += br->widths[col] * 2 + br->spacing;
+    }
+    /* Take the center of the button */
+    oldx = x + br->widths[oldcol];
+
+    /* Now find a button at about the same x in the new row */
+    br = rows[row];
+    x = br->start_x;
+    for (col = 0; col < br->num_keys; col++) {
+        if (x > oldx) {
+            return col > 0 ? (col - 1) : col;
+        }
+        x += br->widths[col] * 2 + br->spacing;
+    }
+    return col - 1;
+}
+
+static void move_up(SDL_OGC_DriverData *data)
+{
+    int oldrow = data->focus_row;
+
+    data->focus_row--;
+    if (data->focus_row < 0) {
+        data->focus_row = NUM_ROWS - 1;
+    }
+
+    if (oldrow >= 0) {
+        data->focus_col = adjust_column(data->focus_row, oldrow, data->focus_col);
+    }
+}
+
+static void move_down(SDL_OGC_DriverData *data)
+{
+    int oldrow = data->focus_row;
+
+    data->focus_row++;
+    if (data->focus_row >= NUM_ROWS) {
+        data->focus_row = 0;
+    }
+
+    if (oldrow >= 0) {
+        data->focus_col = adjust_column(data->focus_row, oldrow, data->focus_col);
+    }
+}
+
+static void handle_joy_axis(SDL_OGC_VkContext *context,
+                            const SDL_JoyAxisEvent *event)
+{
+    SDL_OGC_DriverData *data = context->driverdata;
+
+    activate_joypad(data);
+
+    if (event->axis == 0) {
+        if (event->value > 256) move_right(data);
+        else if (event->value < -256) move_left(data);
+    } else if (event->axis == 1) {
+        if (event->value > 256) move_down(data);
+        else if (event->value < -256) move_up(data);
+    }
+}
+
+static void handle_joy_hat(SDL_OGC_VkContext *context, Uint8 pos)
+{
+    SDL_OGC_DriverData *data = context->driverdata;
+
+    activate_joypad(data);
+
+    switch (pos) {
+    case SDL_HAT_RIGHT: move_right(data); break;
+    case SDL_HAT_LEFT: move_left(data); break;
+    case SDL_HAT_DOWN: move_down(data); break;
+    case SDL_HAT_UP: move_up(data); break;
+    }
+}
+
+static void handle_joy_button(SDL_OGC_VkContext *context,
+                              Uint8 button, Uint8 state)
+{
+    SDL_OGC_DriverData *data = context->driverdata;
+
+    if (data->focus_row < 0) return;
+
+    printf("Button %d, state %d\n", button, state);
+    /* For now, only handle button press */
+    if (state != SDL_PRESSED) return;
+
+    switch (button) {
+    case 0:
+        activate_key(context, data->focus_row, data->focus_col);
+        break;
+    case 1:
+        SDL_OGC_SendVirtualKeyboardKey(SDL_PRESSED, SDL_SCANCODE_BACKSPACE);
+        break;
     }
 }
 
@@ -390,6 +547,7 @@ static void Init(SDL_OGC_VkContext *context)
 
     data = SDL_calloc(sizeof(SDL_OGC_DriverData), 1);
     data->highlight_row = -1;
+    data->focus_row = -1;
     data->key_color.r = 255;
     data->key_color.g = 255;
     data->key_color.b = 255;
@@ -436,7 +594,24 @@ static SDL_bool ProcessEvent(SDL_OGC_VkContext *context, SDL_Event *event)
     case SDL_MOUSEMOTION:
         handle_motion(context, event->motion.x, event->motion.y);
         return SDL_TRUE;
+    case SDL_JOYAXISMOTION:
+        handle_joy_axis(context, &event->jaxis);
+        return SDL_TRUE;
+    case SDL_JOYHATMOTION:
+        handle_joy_hat(context, event->jhat.value);
+        return SDL_TRUE;
+    case SDL_JOYBUTTONDOWN:
+    case SDL_JOYBUTTONUP:
+        handle_joy_button(context, event->jbutton.button,
+                          event->jbutton.state);
+        return SDL_TRUE;
     }
+
+    if (event->type >= SDL_MOUSEMOTION &&
+        event->type <= SDL_CONTROLLERSENSORUPDATE) {
+        return SDL_TRUE;
+    }
+
     return SDL_FALSE;
 }
 
