@@ -394,7 +394,9 @@ static int init_sdl(void)
     SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
 #endif
 
+#ifdef __wii__
     SDL_OGC_RegisterVkPlugin(ogc_keyboard_get_plugin());
+#endif
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) != 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not initialize SDL: %s", SDL_GetError());
         return 0;
