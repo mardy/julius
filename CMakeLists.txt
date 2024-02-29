@@ -209,7 +209,7 @@ elseif (NINTENDO_SWITCH)
         ${PLATFORM_FILES}
         ${PROJECT_SOURCE_DIR}/src/platform/switch/switch.c
     )
-elseif (NINTENDO_WII OR NINTENDO_GAMECUBE)
+elseif (NINTENDO_WII)
     set(PLATFORM_FILES
         ${PLATFORM_FILES}
         ${PROJECT_SOURCE_DIR}/src/platform/ogc/sdlkeyboard.c
@@ -831,7 +831,7 @@ nx_create_nro (${PROJECT_NAME}
     ICON ${CMAKE_SOURCE_DIR}/res/switch/icon0.jpg
 )
 
-elseif(NINTENDO_WII OR NINTENDO_GAMECUBE)
+elseif(NINTENDO_WII)
 
     pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2 SDL2_mixer SDL2_ttf)
     target_link_libraries(${SHORT_NAME} PkgConfig::SDL2)
