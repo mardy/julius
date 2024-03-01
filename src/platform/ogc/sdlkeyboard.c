@@ -2,6 +2,9 @@
 
 #include <SDL.h>
 #include <SDL_ttf.h>
+#include <malloc.h>
+#include <ogc/cache.h>
+#include <ogc/gx.h>
 
 #define ANIMATION_TIME_ENTER 1000
 #define ANIMATION_TIME_EXIT 500
@@ -14,6 +17,12 @@
 #define FONT_SIZE 24
 #define TEXTURE_CACHE_SIZE 40
 #define FOCUS_BORDER 4
+
+typedef struct TextureData {
+    int16_t width;
+    int16_t height;
+    void *texels;
+} TextureData;
 
 struct SDL_OGC_DriverData {
     int16_t screen_width;
@@ -30,11 +39,11 @@ struct SDL_OGC_DriverData {
     int start_visible_height;
     int target_visible_height;
     int animation_time;
-    SDL_Color key_color;
+    uint32_t key_color;
     SDL_Cursor *app_cursor;
     SDL_Cursor *default_cursor;
     TTF_Font *key_font;
-    SDL_Texture **key_textures;
+    TextureData *key_textures;
 };
 
 typedef struct RowLayout {
@@ -147,7 +156,7 @@ static void initialize_key_textures(SDL_OGC_DriverData *data)
 {
     if (data->key_textures) return;
 
-    data->key_textures = SDL_calloc(sizeof(SDL_Texture *), TEXTURE_CACHE_SIZE);
+    data->key_textures = SDL_calloc(sizeof(TextureData), TEXTURE_CACHE_SIZE);
 }
 
 static void free_key_textures(SDL_OGC_DriverData *data)
@@ -155,9 +164,9 @@ static void free_key_textures(SDL_OGC_DriverData *data)
     if (!data->key_textures) return;
 
     for (int i = 0; i < TEXTURE_CACHE_SIZE; i++) {
-        SDL_Texture *texture = data->key_textures[i];
-        if (texture) {
-            SDL_DestroyTexture(texture);
+        void *texels = data->key_textures[i].texels;
+        if (texels) {
+            free(texels);
         }
     }
     SDL_free(data->key_textures);
@@ -173,49 +182,151 @@ static inline const char *text_by_pos(SDL_OGC_DriverData *data, int row, int col
     return layout->symbols ? layout->symbols[col] : NULL;
 }
 
-static inline SDL_Texture *load_key_texture(SDL_OGC_DriverData *data, SDL_Renderer *renderer,
-                                            int row, int col)
+static int font_surface_to_texture(SDL_Surface *surface, TextureData *texture)
+{
+    u32 texture_size;
+    uint8_t *pixels;
+    uint8_t *texels;
+
+    texture_size = GX_GetTexBufferSize(surface->w, surface->h, GX_TF_I4,
+                                       GX_FALSE, 0);
+    texels = memalign(32, texture_size);
+    if (!texels) return 0;
+
+    /* Font textures are always in 32-bit ARGB format */
+    for (int y = 0; y < surface->h; y++) {
+        uint8_t pixel_pair;
+
+        pixels = surface->pixels + y * surface->pitch;
+        for (int x = 0; x < surface->w; x++) {
+            if (x % 2 == 0) {
+                pixel_pair = *pixels & 0xf0;
+            } else {
+                pixel_pair |= *pixels >> 4;
+            }
+
+            int cell = (y / 8) * ((surface->w + 7) / 8) + x / 8;
+            int offset = cell * 32 + (y % 8) * 4 + (x / 2) % 4;
+            texels[offset] = pixel_pair;
+            pixels += 4;
+        }
+    }
+
+    DCStoreRange(texels, texture_size);
+    GX_InvalidateTexAll();
+
+    texture->width = surface->w;
+    texture->height = surface->h;
+    texture->texels = texels;
+    return 1;
+}
+
+static inline int load_key_texture(SDL_OGC_DriverData *data, SDL_Renderer *renderer,
+                                   int row, int col, TextureData *texture)
 {
     const char *text;
     SDL_Surface *surface;
-    SDL_Texture *texture;
+    const SDL_Color white = { 0xff, 0xff, 0xff, 0xff };
+    int ret = 0;
 
     text = text_by_pos(data, row, col);
-    if (!text) return NULL;
+    if (!text) return 0;
 
-    surface = TTF_RenderUTF8_Blended(data->key_font, text, data->key_color);
-    texture = SDL_CreateTextureFromSurface(renderer, surface);
+    surface = TTF_RenderUTF8_Blended(data->key_font, text, white);
+    if (!surface) return 0;
+
+    SDL_LockSurface(surface);
+    ret = font_surface_to_texture(surface, texture);
+    SDL_UnlockSurface(surface);
     SDL_FreeSurface(surface);
-    return texture;
+    return ret;
 }
 
-static inline SDL_Texture *lookup_key_texture(SDL_OGC_DriverData *data, SDL_Renderer *renderer,
+static inline TextureData *lookup_key_texture(SDL_OGC_DriverData *data, SDL_Renderer *renderer,
                                               int row, int col)
 {
     int key_id;
 
     key_id = key_id_from_pos(row, col);
-    if (data->key_textures[key_id] == NULL) {
-        data->key_textures[key_id] = load_key_texture(data, renderer, row, col);
+    if (data->key_textures[key_id].texels == NULL) {
+        if (!load_key_texture(data, renderer, row, col,
+                              &data->key_textures[key_id])) {
+            printf("Texture not loaded!\n");
+            return NULL;
+        }
     }
 
-    return data->key_textures[key_id];
+    return &data->key_textures[key_id];
+}
+
+static void draw_font_texture(const TextureData *texture,
+                              int x, int y, uint32_t color)
+{
+    GXTexObj texobj;
+
+    GX_InitTexObj(&texobj, texture->texels, texture->width, texture->height,
+                  GX_TF_I4, GX_CLAMP, GX_CLAMP, GX_FALSE);
+    GX_InitTexObjLOD(&texobj, GX_NEAR, GX_NEAR,
+                     0.0f, 0.0f, 0.0f, 0, 0, GX_ANISO_1);
+    GX_LoadTexObj(&texobj, GX_TEXMAP0);
+
+    GX_ClearVtxDesc();
+    GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
+    GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+    GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+    GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XY, GX_S16, 0);
+    GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+    GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_U8, 0);
+    GX_SetNumTexGens(1);
+    GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
+    GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
+    GX_SetNumTevStages(1);
+    GX_SetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_CLEAR);
+    /* This custom processing is like GX_MODULATE, except that instead of
+     * picking the color from the texture (GX_CC_TEXC) we take full intensity
+     * (GX_CC_ONE).
+     */
+    GX_SetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_ONE, GX_CC_RASC, GX_CC_ZERO);
+	GX_SetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+	GX_SetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_TEXA, GX_CA_RASA, GX_CA_ZERO);
+	GX_SetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+
+    GX_Begin(GX_QUADS, GX_VTXFMT0, 4);
+
+    GX_Position2s16(x, y);
+    GX_Color1u32(color);
+    GX_TexCoord2u8(0, 0);
+
+    GX_Position2s16(x + texture->width, y);
+    GX_Color1u32(color);
+    GX_TexCoord2u8(1, 0);
+
+    GX_Position2s16(x + texture->width, y + texture->height);
+    GX_Color1u32(color);
+    GX_TexCoord2u8(1, 1);
+
+    GX_Position2s16(x, y + texture->height);
+    GX_Color1u32(color);
+    GX_TexCoord2u8(0, 1);
+
+    GX_End();
+
+    GX_DrawDone();
 }
 
 static inline void draw_key(SDL_OGC_VkContext *context, SDL_Renderer *renderer,
                             int row, int col, const SDL_Rect *rect)
 {
     SDL_OGC_DriverData *data = context->driverdata;
-    SDL_Texture *texture;
-    SDL_Rect dstRect;
+    TextureData *texture;
+    int x, y;
 
     texture = lookup_key_texture(data, renderer, row, col);
     if (!texture) return;
 
-    SDL_QueryTexture(texture, NULL, NULL, &dstRect.w, &dstRect.h);
-    dstRect.x = rect->x + (rect->w - dstRect.w) / 2;
-    dstRect.y = rect->y + (rect->h - dstRect.h) / 2;
-    SDL_RenderCopy(renderer, texture, NULL, &dstRect);
+    x = rect->x + (rect->w - texture->width) / 2;
+    y = rect->y + (rect->h - texture->height) / 2;
+    draw_font_texture(texture, x, y, data->key_color);
 }
 
 static inline void draw_key_background(SDL_OGC_VkContext *context, SDL_Renderer *renderer,
@@ -267,6 +378,7 @@ static void draw_keyboard(SDL_OGC_VkContext *context, SDL_Renderer *renderer)
             rect.w = br->widths[col] * 2;
             rect.h = ROW_HEIGHT;
             draw_key_background(context, renderer, &rect, row, col);
+    SDL_RenderFlush(renderer);
             draw_key(context, renderer, row, col, &rect);
 
             x += br->widths[col] * 2 + br->spacing;
@@ -548,10 +660,7 @@ static void Init(SDL_OGC_VkContext *context)
     data = SDL_calloc(sizeof(SDL_OGC_DriverData), 1);
     data->highlight_row = -1;
     data->focus_row = -1;
-    data->key_color.r = 255;
-    data->key_color.g = 255;
-    data->key_color.b = 255;
-    data->key_color.a = 255;
+    data->key_color = 0xffffffff;
     data->key_font = TTF_OpenFont(FONT_NAME, FONT_SIZE);
     context->driverdata = data;
 }
