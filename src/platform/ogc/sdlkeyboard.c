@@ -10,6 +10,7 @@
 #define ANIMATION_TIME_EXIT 500
 #define NUM_ROWS 5
 #define NUM_LAYOUTS 4
+#define MAX_BUTTONS_PER_ROW 10
 #define ROW_HEIGHT 40
 #define ROW_SPACING 12
 #define KEYBOARD_HEIGHT (NUM_ROWS * (ROW_HEIGHT + ROW_SPACING))
@@ -17,10 +18,15 @@
 #define FONT_SIZE 24
 #define TEXTURE_CACHE_SIZE 40
 #define FOCUS_BORDER 4
+/* For wide fonts this might need to be increased. With our font the max width
+ * we use if 205 */
+#define LAYOUT_TEXTURE_WIDTH 256
 
 typedef struct TextureData {
     int16_t width;
     int16_t height;
+    uint8_t key_widths[NUM_ROWS][MAX_BUTTONS_PER_ROW];
+    uint8_t key_height;
     void *texels;
 } TextureData;
 
@@ -43,7 +49,7 @@ struct SDL_OGC_DriverData {
     SDL_Cursor *app_cursor;
     SDL_Cursor *default_cursor;
     TTF_Font *key_font;
-    TextureData *key_textures;
+    TextureData layout_textures[NUM_LAYOUTS];
 };
 
 typedef struct RowLayout {
@@ -152,114 +158,137 @@ static inline void key_id_to_pos(int key_id, int *row, int *col)
 {
 }
 
-static void initialize_key_textures(SDL_OGC_DriverData *data)
+static void free_layout_textures(SDL_OGC_DriverData *data)
 {
-    if (data->key_textures) return;
-
-    data->key_textures = SDL_calloc(sizeof(TextureData), TEXTURE_CACHE_SIZE);
-}
-
-static void free_key_textures(SDL_OGC_DriverData *data)
-{
-    if (!data->key_textures) return;
-
-    for (int i = 0; i < TEXTURE_CACHE_SIZE; i++) {
-        void *texels = data->key_textures[i].texels;
+    for (int i = 0; i < NUM_LAYOUTS; i++) {
+        void *texels = data->layout_textures[i].texels;
         if (texels) {
             free(texels);
         }
     }
-    SDL_free(data->key_textures);
-    data->key_textures = NULL;
-
+    memset(data->layout_textures, 0, sizeof(data->layout_textures));
 }
 
-static inline const char *text_by_pos(SDL_OGC_DriverData *data, int row, int col)
+static inline const char *text_by_pos_and_layout(int row, int col,
+                                                 int layout_index)
 {
     const ButtonRow *br = rows[row];
-    const RowLayout *layout = &br->layouts[data->active_layout];
+    const RowLayout *layout = &br->layouts[layout_index];
 
     return layout->symbols ? layout->symbols[col] : NULL;
 }
 
-static int font_surface_to_texture(SDL_Surface *surface, TextureData *texture)
+static inline const char *text_by_pos(SDL_OGC_DriverData *data, int row, int col)
 {
-    u32 texture_size;
-    uint8_t *pixels;
-    uint8_t *texels;
+    return text_by_pos_and_layout(row, col, data->active_layout);
+}
 
-    texture_size = GX_GetTexBufferSize(surface->w, surface->h, GX_TF_I4,
-                                       GX_FALSE, 0);
-    texels = memalign(32, texture_size);
-    if (!texels) return 0;
+static void *allocate_texture(int w, int h, int *allocated_size)
+{
+    int texture_size = GX_GetTexBufferSize(w, h, GX_TF_I4, GX_FALSE, 0);
+    void *texels = memalign(32, texture_size);
+    if (allocated_size) *allocated_size = texture_size;
+    return texels;
+}
+
+static int font_surface_to_texture(SDL_Surface *surface, uint8_t *texels,
+                                   int start_x, int start_y, int pitch)
+{
+    uint8_t *pixels;
 
     /* Font textures are always in 32-bit ARGB format */
     for (int y = 0; y < surface->h; y++) {
         uint8_t pixel_pair;
 
-        pixels = surface->pixels + y * surface->pitch;
+        pixels = (uint8_t*)surface->pixels + y * surface->pitch;
         for (int x = 0; x < surface->w; x++) {
-            if (x % 2 == 0) {
+            int tx = start_x + x;
+            int ty = start_y + y;
+            int cell = (ty / 8) * ((pitch + 7) / 8) + tx / 8;
+            int offset = cell * 32 + (ty % 8) * 4 + (tx / 2) % 4;
+            if (tx % 2 == 0) {
                 pixel_pair = *pixels & 0xf0;
             } else {
+                if (x == 0) {
+                    /* Take the value from the texture */
+                    pixel_pair = texels[offset];
+                }
                 pixel_pair |= *pixels >> 4;
             }
 
-            int cell = (y / 8) * ((surface->w + 7) / 8) + x / 8;
-            int offset = cell * 32 + (y % 8) * 4 + (x / 2) % 4;
             texels[offset] = pixel_pair;
             pixels += 4;
         }
     }
 
-    DCStoreRange(texels, texture_size);
-    GX_InvalidateTexAll();
-
-    texture->width = surface->w;
-    texture->height = surface->h;
-    texture->texels = texels;
     return 1;
 }
 
-static inline int load_key_texture(SDL_OGC_DriverData *data, SDL_Renderer *renderer,
-                                   int row, int col, TextureData *texture)
+static inline int build_layout_texture(SDL_OGC_DriverData *data, int layout_index)
 {
+    TextureData *texture = &data->layout_textures[layout_index];
     const char *text;
     SDL_Surface *surface;
     const SDL_Color white = { 0xff, 0xff, 0xff, 0xff };
+    int pitch;
+    int row_height = FONT_SIZE + 4;
+    uint8_t *texels;
+    int texture_size;
     int ret = 0;
 
-    text = text_by_pos(data, row, col);
-    if (!text) return 0;
+    texels = allocate_texture(LAYOUT_TEXTURE_WIDTH, row_height * NUM_ROWS,
+                              &texture_size);
+    if (!texels) return 0;
 
-    surface = TTF_RenderUTF8_Blended(data->key_font, text, white);
-    if (!surface) return 0;
+    memset(texels, 0, texture_size);
+    pitch = LAYOUT_TEXTURE_WIDTH;
+    int y = 0;
+    for (int row = 0; row < NUM_ROWS; row++) {
+        const ButtonRow *br = rows[row];
+        int x = 0;
 
-    SDL_LockSurface(surface);
-    ret = font_surface_to_texture(surface, texture);
-    SDL_UnlockSurface(surface);
-    SDL_FreeSurface(surface);
-    return ret;
+        for (int col = 0; col < br->num_keys; col++) {
+            text = text_by_pos_and_layout(row, col, layout_index);
+            if (!text) continue;
+
+            surface = TTF_RenderUTF8_Blended(data->key_font, text, white);
+            if (!surface) continue;
+
+            SDL_LockSurface(surface);
+            ret = font_surface_to_texture(surface, texels, x, y, pitch);
+            SDL_UnlockSurface(surface);
+            SDL_FreeSurface(surface);
+            if (!ret) return 0;
+
+            x += surface->w;
+            texture->key_widths[row][col] = surface->w;
+        }
+        y += row_height;
+    }
+    DCStoreRange(texels, texture_size);
+    GX_InvalidateTexAll();
+
+    texture->texels = texels;
+    texture->width = LAYOUT_TEXTURE_WIDTH;
+    texture->height = row_height * NUM_ROWS;
+    texture->key_height = row_height;
+    return 1;
 }
 
-static inline TextureData *lookup_key_texture(SDL_OGC_DriverData *data, SDL_Renderer *renderer,
-                                              int row, int col)
+static TextureData *lookup_layout_texture(SDL_OGC_DriverData *data,
+                                          int layout_index)
 {
-    int key_id;
-
-    key_id = key_id_from_pos(row, col);
-    if (data->key_textures[key_id].texels == NULL) {
-        if (!load_key_texture(data, renderer, row, col,
-                              &data->key_textures[key_id])) {
+    if (data->layout_textures[layout_index].texels == NULL) {
+        if (!build_layout_texture(data, layout_index)) {
             printf("Texture not loaded!\n");
             return NULL;
         }
     }
 
-    return &data->key_textures[key_id];
+    return &data->layout_textures[layout_index];
 }
 
-static void setup_texture_pipeline()
+static void setup_texture_pipeline(void)
 {
     GX_ClearVtxDesc();
     GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
@@ -267,7 +296,7 @@ static void setup_texture_pipeline()
     GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
     GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XY, GX_S16, 0);
     GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
-    GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_U8, 0);
+    GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_U16, 0);
     GX_SetNumTexGens(1);
     GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
     GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
@@ -281,10 +310,11 @@ static void setup_texture_pipeline()
 	GX_SetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
 	GX_SetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_TEXA, GX_CA_RASA, GX_CA_ZERO);
 	GX_SetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+
+    GX_SetTexCoordScaleManually(GX_TEXCOORD0, GX_TRUE, 1, 1);
 }
 
-static void draw_font_texture(const TextureData *texture,
-                              int x, int y, uint32_t color)
+static void activate_layout_texture(const TextureData *texture)
 {
     GXTexObj texobj;
 
@@ -293,41 +323,55 @@ static void draw_font_texture(const TextureData *texture,
     GX_InitTexObjLOD(&texobj, GX_NEAR, GX_NEAR,
                      0.0f, 0.0f, 0.0f, 0, 0, GX_ANISO_1);
     GX_LoadTexObj(&texobj, GX_TEXMAP0);
+}
+
+static void draw_font_texture(const TextureData *texture, int row, int col,
+                              int center_x, int center_y, uint32_t color)
+{
+    int16_t x, y, w, h, dest_x, dest_y;
+
+    x = 0;
+    for (int i = 0; i < col; i++) {
+        x += texture->key_widths[row][i];
+    }
+    y = texture->key_height * row;
+    w = texture->key_widths[row][col];
+    h = texture->key_height;
+
+    dest_x = center_x - w / 2;
+    dest_y = center_y - h / 2;
 
     GX_Begin(GX_QUADS, GX_VTXFMT0, 4);
 
-    GX_Position2s16(x, y);
+    GX_Position2s16(dest_x, dest_y);
     GX_Color1u32(color);
-    GX_TexCoord2u8(0, 0);
+    GX_TexCoord2u16(x, y);
 
-    GX_Position2s16(x + texture->width, y);
+    GX_Position2s16(dest_x + w, dest_y);
     GX_Color1u32(color);
-    GX_TexCoord2u8(1, 0);
+    GX_TexCoord2u16(x + w, y);
 
-    GX_Position2s16(x + texture->width, y + texture->height);
+    GX_Position2s16(dest_x + w, dest_y + h);
     GX_Color1u32(color);
-    GX_TexCoord2u8(1, 1);
+    GX_TexCoord2u16(x + w, y + h);
 
-    GX_Position2s16(x, y + texture->height);
+    GX_Position2s16(dest_x, dest_y + h);
     GX_Color1u32(color);
-    GX_TexCoord2u8(0, 1);
+    GX_TexCoord2u16(x, y + h);
 
     GX_End();
 }
 
-static inline void draw_key(SDL_OGC_VkContext *context, SDL_Renderer *renderer,
+static inline void draw_key(SDL_OGC_VkContext *context,
+                            const TextureData *texture,
                             int row, int col, const SDL_Rect *rect)
 {
     SDL_OGC_DriverData *data = context->driverdata;
-    TextureData *texture;
     int x, y;
 
-    texture = lookup_key_texture(data, renderer, row, col);
-    if (!texture) return;
-
-    x = rect->x + (rect->w - texture->width) / 2;
-    y = rect->y + (rect->h - texture->height) / 2;
-    draw_font_texture(texture, x, y, data->key_color);
+    x = rect->x + rect->w / 2;
+    y = rect->y + rect->h / 2;
+    draw_font_texture(texture, row, col, x, y, data->key_color);
 }
 
 static inline void draw_key_background(SDL_OGC_VkContext *context, SDL_Renderer *renderer,
@@ -362,10 +406,35 @@ static inline void draw_key_background(SDL_OGC_VkContext *context, SDL_Renderer 
     SDL_RenderFillRect(renderer, rect);
 }
 
+static void draw_keys(SDL_OGC_VkContext *context, const TextureData *texture)
+{
+    SDL_OGC_DriverData *data = context->driverdata;
+    int start_y = data->screen_height - data->visible_height + 5;
+
+    activate_layout_texture(texture);
+
+    for (int row = 0; row < NUM_ROWS; row++) {
+        const ButtonRow *br = rows[row];
+        int y = start_y + (ROW_HEIGHT + ROW_SPACING) * row;
+        int x = br->start_x;
+
+        for (int col = 0; col < br->num_keys; col++) {
+            SDL_Rect rect;
+            rect.x = x;
+            rect.y = y;
+            rect.w = br->widths[col] * 2;
+            rect.h = ROW_HEIGHT;
+            draw_key(context, texture, row, col, &rect);
+            x += br->widths[col] * 2 + br->spacing;
+        }
+    }
+}
+
 static void draw_keyboard(SDL_OGC_VkContext *context, SDL_Renderer *renderer)
 {
     SDL_OGC_DriverData *data = context->driverdata;
     int start_y = data->screen_height - data->visible_height + 5;
+    const TextureData *texture;
 
     for (int row = 0; row < NUM_ROWS; row++) {
         const ButtonRow *br = rows[row];
@@ -385,23 +454,12 @@ static void draw_keyboard(SDL_OGC_VkContext *context, SDL_Renderer *renderer)
 
     SDL_RenderFlush(renderer);
     setup_texture_pipeline();
-
-    for (int row = 0; row < NUM_ROWS; row++) {
-        const ButtonRow *br = rows[row];
-        int y = start_y + (ROW_HEIGHT + ROW_SPACING) * row;
-        int x = br->start_x;
-
-        for (int col = 0; col < br->num_keys; col++) {
-            SDL_Rect rect;
-            rect.x = x;
-            rect.y = y;
-            rect.w = br->widths[col] * 2;
-            rect.h = ROW_HEIGHT;
-            draw_key(context, renderer, row, col, &rect);
-            x += br->widths[col] * 2 + br->spacing;
-        }
+    texture = lookup_layout_texture(data, data->active_layout);
+    if (texture) {
+        draw_keys(context, texture);
     }
 
+    GX_SetTexCoordScaleManually(GX_TEXCOORD0, GX_FALSE, 0, 0);
     GX_DrawDone();
 }
 
@@ -410,7 +468,7 @@ static void dispose_keyboard(SDL_OGC_VkContext *context)
     SDL_OGC_DriverData *data = context->driverdata;
 
     context->is_open = SDL_FALSE;
-    free_key_textures(data);
+    free_layout_textures(data);
 
     if (data->app_cursor) {
         SDL_SetCursor(data->app_cursor);
@@ -478,8 +536,6 @@ static void switch_layout(SDL_OGC_VkContext *context, int level)
     SDL_OGC_DriverData *data = context->driverdata;
 
     data->active_layout = level;
-    free_key_textures(data);
-    initialize_key_textures(data);
 }
 
 static void activate_mouse(SDL_OGC_DriverData *data)
@@ -779,8 +835,6 @@ static void ShowScreenKeyboard(SDL_OGC_VkContext *context)
 {
     SDL_OGC_DriverData *data = context->driverdata;
     SDL_Cursor *cursor, *default_cursor;
-
-    initialize_key_textures(data);
 
     printf("%s called\n", __func__);
     if (data->screen_width == 0) {
