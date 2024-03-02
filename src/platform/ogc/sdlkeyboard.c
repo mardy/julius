@@ -5,6 +5,7 @@
 #include <malloc.h>
 #include <ogc/cache.h>
 #include <ogc/gx.h>
+#include <ogcsys.h>
 
 #define ANIMATION_TIME_ENTER 1000
 #define ANIMATION_TIME_EXIT 500
@@ -22,12 +23,20 @@
  * we use if 205 */
 #define LAYOUT_TEXTURE_WIDTH 256
 
+typedef struct ThreadData {
+    lwp_t handle;
+    u32 mutex;
+    SDL_OGC_DriverData *data;
+    int layout_index;
+} ThreadData;
+
 typedef struct TextureData {
     int16_t width;
     int16_t height;
     uint8_t key_widths[NUM_ROWS][MAX_BUTTONS_PER_ROW];
     uint8_t key_height;
     void *texels;
+    ThreadData *build_thread;
 } TextureData;
 
 struct SDL_OGC_DriverData {
@@ -224,7 +233,7 @@ static int font_surface_to_texture(SDL_Surface *surface, uint8_t *texels,
     return 1;
 }
 
-static inline int build_layout_texture(SDL_OGC_DriverData *data, int layout_index)
+static inline void *build_layout_texture(SDL_OGC_DriverData *data, int layout_index)
 {
     TextureData *texture = &data->layout_textures[layout_index];
     const char *text;
@@ -238,8 +247,10 @@ static inline int build_layout_texture(SDL_OGC_DriverData *data, int layout_inde
 
     texels = allocate_texture(LAYOUT_TEXTURE_WIDTH, row_height * NUM_ROWS,
                               &texture_size);
-    if (!texels) return 0;
+    printf("Texels = %p\n", texels);
+    if (!texels) return NULL;
 
+    LWP_YieldThread();
     memset(texels, 0, texture_size);
     pitch = LAYOUT_TEXTURE_WIDTH;
     int y = 0;
@@ -248,6 +259,7 @@ static inline int build_layout_texture(SDL_OGC_DriverData *data, int layout_inde
         int x = 0;
 
         for (int col = 0; col < br->num_keys; col++) {
+            printf("building key at %d,%d\n", row, col);
             text = text_by_pos_and_layout(row, col, layout_index);
             if (!text) continue;
 
@@ -258,30 +270,87 @@ static inline int build_layout_texture(SDL_OGC_DriverData *data, int layout_inde
             ret = font_surface_to_texture(surface, texels, x, y, pitch);
             SDL_UnlockSurface(surface);
             SDL_FreeSurface(surface);
-            if (!ret) return 0;
+            if (!ret) goto error;
 
             x += surface->w;
             texture->key_widths[row][col] = surface->w;
+            LWP_YieldThread();
         }
         y += row_height;
     }
     DCStoreRange(texels, texture_size);
     GX_InvalidateTexAll();
 
-    texture->texels = texels;
     texture->width = LAYOUT_TEXTURE_WIDTH;
     texture->height = row_height * NUM_ROWS;
     texture->key_height = row_height;
-    return 1;
+    return texels;
+
+error:
+    free(texels);
+    return NULL;
+}
+
+static void* build_layout_texture_wrapper(void *thread_data)
+{
+    ThreadData *td = thread_data;
+    TextureData *texture = &td->data->layout_textures[td->layout_index];
+
+    printf("thread started\n");
+    void *texels = build_layout_texture(td->data, td->layout_index);
+    printf("thread done\n");
+    LWP_MutexLock(td->mutex);
+    texture->texels = texels;
+    LWP_MutexUnlock(td->mutex);
+    return NULL;
+}
+
+static inline int build_layout_texture_in_thread(SDL_OGC_DriverData *data,
+                                                  int layout_index)
+{
+    TextureData *texture = &data->layout_textures[layout_index];
+    ThreadData *thread;
+
+    thread = SDL_calloc(sizeof(ThreadData), 1);
+    if (!thread) return 0;
+
+    LWP_MutexInit(&thread->mutex, 0);
+    thread->data = data;
+    thread->layout_index = layout_index;
+    texture->build_thread = thread;
+
+    printf("Starting thread\n");
+    int rc = LWP_CreateThread(&thread->handle,
+                              build_layout_texture_wrapper, thread,
+                              NULL, 0, 40 /* slightly low priority */);
+    printf("Starting thread, rc = %d\n", rc);
+    return rc >= 0;
 }
 
 static TextureData *lookup_layout_texture(SDL_OGC_DriverData *data,
                                           int layout_index)
 {
-    if (data->layout_textures[layout_index].texels == NULL) {
-        if (!build_layout_texture(data, layout_index)) {
+    TextureData *texture = &data->layout_textures[layout_index];
+    ThreadData *thread = texture->build_thread;
+    if (thread) {
+        LWP_MutexLock(thread->mutex);
+    }
+    if (texture->texels == NULL && !thread) {
+        if (!build_layout_texture_in_thread(data, layout_index)) {
             printf("Texture not loaded!\n");
             return NULL;
+        }
+    }
+    if (thread) {
+        int done = texture->texels != NULL;
+        LWP_MutexUnlock(thread->mutex);
+        /* If the thread was completed, delete its associated data */
+        if (done) {
+            void *v;
+            LWP_JoinThread(thread->handle, &v);
+            LWP_MutexDestroy(thread->mutex);
+            SDL_free(thread);
+            texture->build_thread = NULL;
         }
     }
 
