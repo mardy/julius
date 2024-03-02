@@ -259,17 +259,8 @@ static inline TextureData *lookup_key_texture(SDL_OGC_DriverData *data, SDL_Rend
     return &data->key_textures[key_id];
 }
 
-static void draw_font_texture(const TextureData *texture,
-                              int x, int y, uint32_t color)
+static void setup_texture_pipeline()
 {
-    GXTexObj texobj;
-
-    GX_InitTexObj(&texobj, texture->texels, texture->width, texture->height,
-                  GX_TF_I4, GX_CLAMP, GX_CLAMP, GX_FALSE);
-    GX_InitTexObjLOD(&texobj, GX_NEAR, GX_NEAR,
-                     0.0f, 0.0f, 0.0f, 0, 0, GX_ANISO_1);
-    GX_LoadTexObj(&texobj, GX_TEXMAP0);
-
     GX_ClearVtxDesc();
     GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
     GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
@@ -290,6 +281,18 @@ static void draw_font_texture(const TextureData *texture,
 	GX_SetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
 	GX_SetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_TEXA, GX_CA_RASA, GX_CA_ZERO);
 	GX_SetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+}
+
+static void draw_font_texture(const TextureData *texture,
+                              int x, int y, uint32_t color)
+{
+    GXTexObj texobj;
+
+    GX_InitTexObj(&texobj, texture->texels, texture->width, texture->height,
+                  GX_TF_I4, GX_CLAMP, GX_CLAMP, GX_FALSE);
+    GX_InitTexObjLOD(&texobj, GX_NEAR, GX_NEAR,
+                     0.0f, 0.0f, 0.0f, 0, 0, GX_ANISO_1);
+    GX_LoadTexObj(&texobj, GX_TEXMAP0);
 
     GX_Begin(GX_QUADS, GX_VTXFMT0, 4);
 
@@ -310,8 +313,6 @@ static void draw_font_texture(const TextureData *texture,
     GX_TexCoord2u8(0, 1);
 
     GX_End();
-
-    GX_DrawDone();
 }
 
 static inline void draw_key(SDL_OGC_VkContext *context, SDL_Renderer *renderer,
@@ -378,12 +379,30 @@ static void draw_keyboard(SDL_OGC_VkContext *context, SDL_Renderer *renderer)
             rect.w = br->widths[col] * 2;
             rect.h = ROW_HEIGHT;
             draw_key_background(context, renderer, &rect, row, col);
-    SDL_RenderFlush(renderer);
-            draw_key(context, renderer, row, col, &rect);
-
             x += br->widths[col] * 2 + br->spacing;
         }
     }
+
+    SDL_RenderFlush(renderer);
+    setup_texture_pipeline();
+
+    for (int row = 0; row < NUM_ROWS; row++) {
+        const ButtonRow *br = rows[row];
+        int y = start_y + (ROW_HEIGHT + ROW_SPACING) * row;
+        int x = br->start_x;
+
+        for (int col = 0; col < br->num_keys; col++) {
+            SDL_Rect rect;
+            rect.x = x;
+            rect.y = y;
+            rect.w = br->widths[col] * 2;
+            rect.h = ROW_HEIGHT;
+            draw_key(context, renderer, row, col, &rect);
+            x += br->widths[col] * 2 + br->spacing;
+        }
+    }
+
+    GX_DrawDone();
 }
 
 static void dispose_keyboard(SDL_OGC_VkContext *context)
